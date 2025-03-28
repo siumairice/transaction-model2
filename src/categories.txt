@@ -1,0 +1,10 @@
+Banking
+Dining
+Entertainment
+Groceries
+Health
+Income
+Miscellaneous
+Retail
+Transportation
+Utilities
