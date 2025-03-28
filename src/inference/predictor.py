@@ -86,7 +86,7 @@ class TransactionPredictor:
         transactions: Union[List[str], pd.DataFrame],
         include_amounts: bool = False,
         include_dates: bool = False,
-        threshold: float = 0.5,
+        threshold: float = 0.08,  # Lower default threshold based on your data
         return_confidences: bool = True
     ) -> pd.DataFrame:
         """
@@ -96,7 +96,7 @@ class TransactionPredictor:
             transactions: List of transaction descriptions or DataFrame with transactions
             include_amounts: Whether to include transaction amounts in predictions
             include_dates: Whether to include transaction dates in predictions
-            threshold: Threshold for multi-label classification
+            threshold: Confidence threshold for returning multiple categories
             return_confidences: Whether to return prediction confidences
             
         Returns:
@@ -251,30 +251,49 @@ class TransactionPredictor:
                 
                 results.append(result)
         else:
-            # Single-label: get argmax and category name
+            # Single-label but return multiple if above threshold
             probs = torch.softmax(logits, dim=1).cpu().numpy()
-            pred_indices = np.argmax(probs, axis=1)
             
             for i in range(len(batch_df)):
                 result = {'description': texts[i]}
                 
-                pred_idx = pred_indices[i]
-                pred_category = self.id_to_category.get(int(pred_idx), f"Category_{pred_idx}")
+                # Get all categories above threshold
+                above_threshold = []
+                above_threshold_confidences = []
                 
-                result['predicted_category'] = pred_category
+                for j in range(len(probs[i])):
+                    if probs[i, j] > threshold:
+                        cat_name = self.id_to_category.get(int(j), f"Category_{j}")
+                        above_threshold.append(cat_name)
+                        above_threshold_confidences.append(float(probs[i, j]))
+                
+                # Sort by confidence (highest first)
+                if above_threshold:
+                    sorted_indices = np.argsort(above_threshold_confidences)[::-1]
+                    above_threshold = [above_threshold[j] for j in sorted_indices]
+                    above_threshold_confidences = [above_threshold_confidences[j] for j in sorted_indices]
+                
+                # Still include the predicted_category for backward compatibility
+                pred_idx = np.argmax(probs[i])
+                result['predicted_category'] = self.id_to_category.get(int(pred_idx), f"Category_{pred_idx}")
                 
                 if return_confidences:
                     result['confidence'] = float(probs[i, pred_idx])
                 
-                # If we want top-k predictions
+                # Add the new multi-category output
+                result['above_threshold_categories'] = above_threshold
                 if return_confidences:
-                    # Get top 3 predictions
-                    top_indices = np.argsort(probs[i])[::-1][:3]
-                    result['top_categories'] = [
-                        self.id_to_category.get(int(idx), f"Category_{idx}") 
-                        for idx in top_indices
-                    ]
-                    result['top_confidences'] = [float(probs[i, idx]) for idx in top_indices]
+                    result['above_threshold_confidences'] = above_threshold_confidences
+                
+                # Print for debugging
+                print(f"Transaction: {texts[i]}")
+                for j in range(len(probs[i])):
+                    cat_name = self.id_to_category.get(int(j), f"Category_{j}")
+                    conf = float(probs[i, j])
+                    if conf > 0.01:  # Only show non-negligible confidences
+                        print(f"  {cat_name}: {conf:.4f}")
+                print(f"  Above threshold: {above_threshold}")
+                print()
                 
                 results.append(result)
         
@@ -287,7 +306,7 @@ class TransactionPredictor:
         description_col: str = 'description',
         amount_col: Optional[str] = 'amount',
         date_col: Optional[str] = 'date',
-        threshold: float = 0.5
+        threshold: float = 0.08  # Lower threshold based on your data
     ) -> pd.DataFrame:
         """
         Predict categories for transactions in a CSV file.
@@ -298,7 +317,7 @@ class TransactionPredictor:
             description_col: Column name for transaction descriptions
             amount_col: Column name for amounts (or None to ignore)
             date_col: Column name for dates (or None to ignore)
-            threshold: Threshold for multi-label classification
+            threshold: Confidence threshold for returning multiple categories
             
         Returns:
             DataFrame with predictions
@@ -337,15 +356,26 @@ class TransactionPredictor:
             return_confidences=True
         )
         
-        # Merge predictions with original data
-        if self.multi_label:
-            # For multi-label, unpack list columns
-            for i, row in predictions.iterrows():
-                if 'predicted_categories' in row and isinstance(row['predicted_categories'], list):
-                    predictions.at[i, 'predicted_category'] = ', '.join(row['predicted_categories'])
+        # Create a new DataFrame to store the results
+        result_df = df.copy()
         
-        # Merge with original data
-        result_df = pd.concat([df, predictions[['predicted_category', 'confidence']]], axis=1)
+        # Add predicted category and confidence
+        result_df['predicted_category'] = predictions['predicted_category']
+        result_df['confidence'] = predictions['confidence']
+        
+        # Add categories above threshold
+        categories_above_threshold = []
+        for i, row in predictions.iterrows():
+            if 'above_threshold_categories' in row and isinstance(row['above_threshold_categories'], list):
+                # Format with confidences
+                formatted_cats = []
+                for cat, conf in zip(row['above_threshold_categories'], row['above_threshold_confidences']):
+                    formatted_cats.append(f"{cat} ({conf:.2f})")
+                categories_above_threshold.append(', '.join(formatted_cats))
+            else:
+                categories_above_threshold.append('')
+        
+        result_df['categories_above_threshold'] = categories_above_threshold
         
         # Save to CSV
         result_df.to_csv(output_file, index=False)
@@ -462,7 +492,8 @@ def predict_transactions(
     include_amounts: bool = False,
     include_dates: bool = False,
     batch_size: int = 32,
-    device: Optional[torch.device] = None
+    device: Optional[torch.device] = None,
+    threshold: float = 0.08  # Lower threshold based on your data
 ) -> pd.DataFrame:
     """
     Predict categories for a list of transaction descriptions.
@@ -474,6 +505,7 @@ def predict_transactions(
         include_dates: Whether to include dates
         batch_size: Batch size for inference
         device: Device to run inference on
+        threshold: Confidence threshold for returning multiple categories
         
     Returns:
         DataFrame with predictions
@@ -488,5 +520,6 @@ def predict_transactions(
         transactions=transactions,
         include_amounts=include_amounts,
         include_dates=include_dates,
+        threshold=threshold,
         return_confidences=True
     )

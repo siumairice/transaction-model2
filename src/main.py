@@ -100,6 +100,10 @@ def setup_arg_parser() -> argparse.ArgumentParser:
     predict_parser.add_argument(
         '--batch-size', '-b', type=int, default=32, help='Batch size for prediction'
     )
+    predict_parser.add_argument(
+        '--threshold', '-th', type=float, default=0.08, 
+        help='Confidence threshold for including multiple categories (default: 0.08)'
+    )
     
     # Evaluate command
     evaluate_parser = subparsers.add_parser('evaluate', help='Evaluate model performance')
@@ -306,7 +310,8 @@ def predict_command(args: argparse.Namespace) -> None:
             output_file=args.output,
             description_col=args.description_col,
             amount_col=args.amount_col,
-            date_col=args.date_col
+            date_col=args.date_col,
+            threshold=args.threshold
         )
         
         logger.info(f"Predictions saved to {args.output}")
